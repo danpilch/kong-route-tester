@@ -1,0 +1,296 @@
+_format_version: "1.1"
+
+############################################################################
+##### Global Plugins
+############################################################################
+
+plugins:
+  # Global CORS plugin
+  - name: cors
+    config:
+      origins:
+        - ^https?:\/\/127\.0\.0\.1(:\d+)?\$
+        - ^https?:\/\/localhost(:\d+)?\$
+      preflight_continue: false
+      credentials: true
+
+  # Prometheus plugin for metrics
+  - name: prometheus
+
+############################################################################
+##### Service Configurations
+############################################################################
+
+services:
+  #----------------------------------------#
+  #-- Authentication Test Service --#
+  #----------------------------------------#
+  - name: auth-service
+    # Using sigil templating with fallback to 127.0.0.1
+    url: ${AUTH_SERVICE_ADDRESS:=http://127.0.0.1:8001}
+    plugins:
+      - name: request-termination
+        config:
+          status_code: 200
+          message: Auth Service OK
+    routes:
+      # Test route with regex patterns and all HTTP methods
+      - name: activate-seat
+        paths:
+          # Regex pattern with named capture groups
+          - /auth/v1/seats/(?<seat_id>[0-9a-fA-F-]+)/activate
+          - /auth/v2/seats/(?<seat_id>[0-9a-fA-F-]+)/invitations/(?<invite_token>[0-9a-fA-F-]+)
+        methods: ["PUT", "POST"]
+        regex_priority: 10
+        plugins:
+          - name: auth
+            config:
+              enable_basic_auth: true
+
+      # Test route with all standard HTTP methods
+      - name: user-management
+        paths:
+          - /auth/v1/users
+          - /auth/v1/users/(?<user_id>[^/]+)
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+        plugins:
+          - name: auth
+
+  #----------------------------------------#
+  #-- Public API Service --#
+  #----------------------------------------#
+  - name: public-api
+    url: ${PUBLIC_SERVICE_ADDRESS:=http://127.0.0.1:8002}
+    routes:
+      # Public routes (no auth required)
+      - name: public-endpoints
+        paths:
+          - /api/v1/public/health
+          - /api/v1/public/status
+          - /api/v1/public/info
+        methods: ["GET", "OPTIONS"]
+        preserve_host: true
+        strip_path: false
+
+      # Routes with specific method restrictions
+      - name: webhook-endpoints
+        paths:
+          - /api/v1/webhooks/stripe
+          - /api/v1/webhooks/paypal
+          - /api/v1/callbacks/(?<provider>[a-zA-Z0-9_-]+)
+        methods: ["POST"]
+        preserve_host: true
+        strip_path: false
+
+  #----------------------------------------#
+  #-- Authenticated API Service --#
+  #----------------------------------------#
+  - name: protected-api
+    url: ${PROTECTED_SERVICE_ADDRESS:=http://127.0.0.1:8003}
+    plugins:
+      # Service-level auth plugin
+      - name: auth
+    routes:
+      # Routes inheriting service-level auth
+      - name: user-data
+        paths:
+          - /api/v1/users/(?<user_id>[0-9a-fA-F-]+)/profile
+          - /api/v1/users/(?<user_id>[0-9a-fA-F-]+)/settings
+        methods: ["GET", "PUT", "PATCH"]
+        preserve_host: true
+        strip_path: false
+
+      # Admin routes with higher regex priority
+      - name: admin-endpoints
+        paths:
+          - /api/v1/admin/users
+          - /api/v1/admin/users/(?<user_id>[0-9a-fA-F-]+)
+          - /api/v1/admin/reports/(?<report_type>[a-zA-Z0-9_-]+)
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        regex_priority: 20
+        preserve_host: true
+        strip_path: false
+
+  #----------------------------------------#
+  #-- Media Service with Complex Patterns --#
+  #----------------------------------------#
+  - name: media-service
+    url: ${MEDIA_SERVICE_ADDRESS:=http://127.0.0.1:8004}
+    routes:
+      # Routes with complex regex patterns
+      - name: media-upload
+        paths:
+          - /media/v1/upload
+          - /media/v2/clients/(?<client_id>[0-9a-fA-F-]+)/upload
+        methods: ["POST", "PUT"]
+        plugins:
+          - name: auth
+
+      # Routes with wildcard patterns
+      - name: media-assets
+        paths:
+          - /media/v1/assets/(.*)
+          - /media/v1/thumbnails/[0-9a-fA-F-]+
+        methods: ["GET", "HEAD"]
+
+  #----------------------------------------#
+  #-- Host-based Routing Service --#
+  #----------------------------------------#
+  - name: subdomain-service
+    url: ${SUBDOMAIN_SERVICE_ADDRESS:=http://127.0.0.1:8005}
+    routes:
+      # Routes with specific host requirements
+      - name: api-subdomain
+        paths:
+          - /v1/data
+          - /v1/analytics
+        hosts: ["api.127.0.0.1", "api.localhost"]
+        methods: ["GET", "POST"]
+        preserve_host: true
+        strip_path: false
+        plugins:
+          - name: auth
+
+      # Routes with blocked access
+      - name: blocked-endpoints
+        paths:
+          - /admin/delete-everything
+          - /admin/backdoor
+        hosts: ["admin.127.0.0.1", "admin.localhost"]
+        methods: ["POST", "DELETE"]
+        preserve_host: true
+        strip_path: false
+        plugins:
+          - name: request-termination
+            config:
+              status_code: 403
+              message: Access Denied
+
+  #----------------------------------------#
+  #-- Mixed Authentication Service --#
+  #----------------------------------------#
+  - name: mixed-auth-service
+    url: ${MIXED_SERVICE_ADDRESS:=http://127.0.0.1:8006}
+    routes:
+      # Authenticated routes
+      - name: protected-resources
+        paths:
+          - /api/v1/protected/data
+          - /api/v1/protected/files/(?<file_id>[0-9a-fA-F-]+)
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        plugins:
+          - name: auth
+
+      # Public routes (same service, no auth)
+      - name: public-resources
+        paths:
+          - /api/v1/public/documentation
+          - /api/v1/public/examples
+          - /api/v1/health-check
+        methods: ["GET", "OPTIONS"]
+
+  #----------------------------------------#
+  #-- Testing Edge Cases Service --#
+  #----------------------------------------#
+  - name: edge-case-service
+    url: ${EDGE_CASE_SERVICE_ADDRESS:=http://127.0.0.1:8007}
+    routes:
+      # Route with no methods specified (should test all methods)
+      - name: all-methods-route
+        paths:
+          - /api/v1/flexible-endpoint
+        plugins:
+          - name: auth
+
+      # Route with single method
+      - name: options-only
+        paths:
+          - /api/v1/cors-preflight
+        methods: ["OPTIONS"]
+
+      # Route with complex nested regex
+      - name: nested-resources
+        paths:
+          - /api/v1/clients/(?<client_id>[0-9a-fA-F-]+)/projects/(?<project_id>[0-9a-fA-F-]+)/tasks/(?<task_id>[0-9a-fA-F-]+)
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        regex_priority: 25
+        plugins:
+          - name: auth
+
+      # Route testing various regex patterns
+      - name: pattern-tests
+        paths:
+          # UUID patterns
+          - /api/v1/uuid/(?<id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})
+          # Alphanumeric with dashes/underscores
+          - /api/v1/slug/(?<slug>[a-zA-Z0-9_-]+)
+          # Any non-slash characters
+          - /api/v1/token/(?<token>[^/]+)
+          # Wildcard catch-all
+          - /api/v1/catchall/(.*)
+        methods: ["GET"]
+        regex_priority: 15
+
+############################################################################
+##### Internal / Test Endpoints
+############################################################################
+
+  # Health check service
+  - name: health-check
+    url: http://127.0.0.1:9999
+    plugins:
+      - name: request-termination
+        config:
+          status_code: 200
+          message: System Healthy
+    routes:
+      - name: health-check
+        paths:
+          - /health
+          - /health-check
+          - /ping
+        methods: ["GET", "HEAD"]
+
+  # Gateway test service for various scenarios
+  - name: gateway-test
+    url: ${TEST_SERVICE_ADDRESS:=http://127.0.0.1:8008}
+    routes:
+      # Test authenticated endpoint
+      - name: test-with-auth
+        paths:
+          - /_test/auth-required
+        methods: ["GET", "POST"]
+        plugins:
+          - name: auth
+
+      # Test unauthenticated endpoint
+      - name: test-without-auth
+        paths:
+          - /_test/public
+        methods: ["GET", "POST"]
+
+      # Test endpoint with custom headers
+      - name: test-headers
+        paths:
+          - /_test/headers
+        methods: ["GET", "POST", "PUT"]
+        plugins:
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-Test-Header: test-value"
+              remove:
+                headers:
+                  - "X-Remove-Me"
+
+      # Test rate limiting
+      - name: test-rate-limit
+        paths:
+          - /_test/rate-limited
+        methods: ["GET", "POST"]
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 10
+              hour: 100
